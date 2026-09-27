@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Film Nest Converter</title>
+<style>
+*{box-sizing:border-box}body{margin:0;font-family:Arial,sans-serif;background:#0b0e14;color:#f5f7fb}
+main{max-width:760px;margin:0 auto;padding:34px 18px 60px}
+.card{background:#151a23;border:1px solid #293140;border-radius:20px;padding:26px;box-shadow:0 18px 60px #0008}
+h1{margin:0 0 8px;font-size:30px}.sub{color:#aab3c2;margin-top:0}
+.drop{margin-top:24px;border:2px dashed #414b5d;border-radius:16px;padding:20px}
+.row{margin:15px 0}.row label{display:block;font-weight:700;margin-bottom:8px}
+input[type=file]{width:100%;padding:12px;background:#0e1219;color:#ddd;border:1px solid #30394a;border-radius:10px}
+button,.download{display:inline-block;border:0;border-radius:11px;padding:13px 18px;background:#fff;color:#111;font-weight:700;cursor:pointer;text-decoration:none;margin-top:8px}
+button:disabled{opacity:.45;cursor:not-allowed}.download{margin-left:8px}
+.status{margin-top:18px;color:#b9c1cf}.bar{height:10px;background:#292f3b;border-radius:10px;margin-top:12px;overflow:hidden}
+.fill{height:100%;width:0;background:#fff;transition:width .2s}.note{font-size:13px;color:#8f99aa;line-height:1.5;margin-top:20px}
+.error{color:#ff9292}.ok{color:#8de3a5}
+</style>
+</head>
+<body>
+<main>
+<section class="card">
+<h1>🎬 Film Nest</h1>
+<p class="sub">MKV + SRT → MP4 with permanent subtitles and a Film Nest watermark.</p>
+
+<div class="drop">
+  <div class="row">
+    <label for="video">Film / Video</label>
+    <input id="video" type="file" accept=".mkv,.mp4,.webm,.mov,.avi,video/*">
+  </div>
+  <div class="row">
+    <label for="srt">Subtitle (.srt)</label>
+    <input id="srt" type="file" accept=".srt,text/plain">
+  </div>
+  <button id="generate">Generate MP4</button>
+  <a id="download" class="download" hidden>Download MP4</a>
+  <div id="status" class="status">Choose the film and subtitle.</div>
+  <div class="bar"><div id="fill" class="fill"></div></div>
+</div>
+
+<p class="note">
+No app or FFmpeg installation is required. Conversion happens in your browser.
+For very large films (for example 650 MB+), the browser may run out of memory or take a long time.
+Keep this tab open until processing finishes. Your files are not uploaded to a server by this page.
+</p>
+</section>
+</main>
+
+<script type="module">
+import { FFmpeg } from "https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/esm/index.js";
+import { fetchFile, toBlobURL } from "https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.1/dist/esm/index.js";
+
+const videoEl=document.querySelector("#video");
+const srtEl=document.querySelector("#srt");
+const btn=document.querySelector("#generate");
+const dl=document.querySelector("#download");
+const status=document.querySelector("#status");
+const fill=document.querySelector("#fill");
+
+let ffmpeg;
+let loaded=false;
+
+function setStatus(t, cls=""){status.className="status "+cls;status.textContent=t}
+function escFilterPath(s){return s.replaceAll("\\","/").replaceAll(":","\\:").replaceAll("'","\\'").replaceAll("[","\\[").replaceAll("]","\\]")}
+
+async function loadFFmpeg(){
+  if(loaded) return;
+  setStatus("Loading video engine… first use may take a little while.");
+  ffmpeg = new FFmpeg();
+  ffmpeg.on("progress", ({progress})=>{
+    const p=Math.max(0,Math.min(100,Math.round(progress*100)));
+    fill.style.width=p+"%";
+    setStatus("Converting… "+p+"%");
+  });
+  const base="https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/esm";
+  await ffmpeg.load({
+    coreURL: await toBlobURL(base+"/ffmpeg-core.js","text/javascript"),
+    wasmURL: await toBlobURL(base+"/ffmpeg-core.wasm","application/wasm"),
+    workerURL: await toBlobURL(base+"/ffmpeg-core.worker.js","text/javascript")
+  });
+  loaded=true;
+}
+
+btn.addEventListener("click", async ()=>{
+  const video=videoEl.files[0], srt=srtEl.files[0];
+  if(!video || !srt){setStatus("Please select both the film and the SRT file.","error");return}
+  btn.disabled=true; dl.hidden=true; fill.style.width="0%";
+  try{
+    await loadFFmpeg();
+    setStatus("Reading files…");
+    await ffmpeg.writeFile("input.mkv",await fetchFile(video));
+    const srtText=await srt.text();
+    await ffmpeg.writeFile("subtitle.srt",new TextEncoder().encode(srtText));
+
+    const vf =
+      "subtitles=subtitle.srt:force_style='FontName=Arial,FontSize=22,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,Outline=2,Shadow=1,MarginV=55'," +
+      "drawtext=text='Film Nest':fontcolor=white:fontsize=20:borderw=2:bordercolor=black@0.7:x=w-tw-25:y=h-th-20";
+
+    setStatus("Converting… keep this tab open.");
+    await ffmpeg.exec([
+      "-i","input.mkv",
+      "-vf",vf,
+      "-c:v","libx264","-preset","ultrafast","-crf","23",
+      "-c:a","aac","-b:a","192k",
+      "-movflags","+faststart",
+      "FilmNest_Final.mp4"
+    ]);
+
+    const data=await ffmpeg.readFile("FilmNest_Final.mp4");
+    const blob=new Blob([data.buffer],{type:"video/mp4"});
+    const url=URL.createObjectURL(blob);
+    dl.href=url; dl.download="FilmNest_Final.mp4"; dl.hidden=false;
+    fill.style.width="100%";
+    setStatus("Finished! Tap Download MP4.","ok");
+  }catch(e){
+    console.error(e);
+    setStatus("Conversion failed: "+(e?.message||e),"error");
+  }finally{
+    btn.disabled=false;
+  }
+});
+</script>
+</body>
+</html>
